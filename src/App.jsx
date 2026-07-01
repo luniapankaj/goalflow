@@ -27,6 +27,7 @@ function AuthScreen({onAuth}){
   const [mode,setMode]=useState('login');
   const [email,setEmail]=useState('');
   const [password,setPassword]=useState('');
+  const [name,setName]=useState('');
   const [error,setError]=useState('');
   const [loading,setLoading]=useState(false);
 
@@ -34,7 +35,8 @@ function AuthScreen({onAuth}){
     if(!email||!password){setError('Please enter email and password');return;}
     setLoading(true);setError('');
     const fn=mode==='login'?supabase.auth.signInWithPassword:supabase.auth.signUp;
-    const {data,error:e}=await fn.call(supabase.auth,{email,password});
+    const opts=mode==='signup'?{email,password,options:{data:{full_name:name}}}:{email,password};
+    const {data,error:e}=await fn.call(supabase.auth,opts);
     setLoading(false);
     if(e){setError(e.message);return;}
     if(mode==='signup'&&!data.session){setError('Account created! Please log in.');setMode('login');return;}
@@ -58,6 +60,7 @@ function AuthScreen({onAuth}){
             </button>
           ))}
         </div>
+        {mode==='signup'&&<input value={name} onChange={e=>setName(e.target.value)} placeholder="Your full name" type="text" style={inp}/>}
         <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email address" type="email" style={inp}/>
         <input value={password} onChange={e=>setPassword(e.target.value)} placeholder="Password (min 6 characters)" type="password" style={{...inp,marginBottom:error?8:16}} onKeyDown={e=>e.key==='Enter'&&handle()}/>
         {error&&<div style={{fontSize:12,color:error.includes('created')?'#16a34a':'#ef4444',marginBottom:12,lineHeight:1.5}}>{error}</div>}
@@ -274,7 +277,8 @@ export default function App(){
     <div style={{width:240,background:'#16213e',display:'flex',flexDirection:'column',height:'100%',overflowY:'auto',flexShrink:0}}>
       <div style={{padding:'18px 18px 14px',borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
         <div style={{fontSize:18,fontWeight:700,color:'#fff',letterSpacing:'-0.3px'}}>🎯 GoalFlow</div>
-        <div style={{fontSize:11,color:'rgba(255,255,255,0.3)',marginTop:2}}>{user?.email}</div>
+        <div style={{fontSize:13,fontWeight:600,color:'rgba(255,255,255,0.7)',marginTop:2}}>{user?.user_metadata?.full_name||user?.email}</div>
+        <div style={{fontSize:11,color:'rgba(255,255,255,0.3)',marginTop:1}}>{user?.email}</div>
       </div>
       <div style={{flex:1,overflowY:'auto',padding:'6px 0'}}><NavItems/></div>
       <div style={{padding:'10px 18px',borderTop:'1px solid rgba(255,255,255,0.07)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
