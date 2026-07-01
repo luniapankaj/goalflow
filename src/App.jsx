@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
+import { supabase } from "./supabase";
 
-const SK='gf_v2';
 const uid=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
 const todayS=()=>new Date().toISOString().slice(0,10);
 const thisMonthS=()=>new Date().toISOString().slice(0,7);
@@ -22,8 +22,59 @@ const CHILD_OF=Object.fromEntries(Object.entries(PARENT_OF).map(([k,v])=>[v,k]))
 const L=id=>LEVELS.find(l=>l.id===id);
 const EMPTY=()=>({longTerm:[],midTerm:[],shortTerm:[],monthly:[],weekly:[],daily:[]});
 
+// ── Auth Screen
+function AuthScreen({onAuth}){
+  const [mode,setMode]=useState('login');
+  const [email,setEmail]=useState('');
+  const [password,setPassword]=useState('');
+  const [error,setError]=useState('');
+  const [loading,setLoading]=useState(false);
+
+  const handle=async()=>{
+    if(!email||!password){setError('Please enter email and password');return;}
+    setLoading(true);setError('');
+    const fn=mode==='login'?supabase.auth.signInWithPassword:supabase.auth.signUp;
+    const {data,error:e}=await fn.call(supabase.auth,{email,password});
+    setLoading(false);
+    if(e){setError(e.message);return;}
+    if(mode==='signup'&&!data.session){setError('Account created! Please log in.');setMode('login');return;}
+    onAuth(data.session?.user||data.user);
+  };
+
+  const inp={width:'100%',border:'1px solid #d1d5db',borderRadius:8,padding:'10px 12px',fontSize:14,outline:'none',boxSizing:'border-box',color:'#1e293b',background:'#fff',fontFamily:'inherit',marginBottom:12};
+
+  return(
+    <div style={{minHeight:'100vh',background:'#f8fafc',display:'flex',alignItems:'center',justifyContent:'center',padding:16}}>
+      <div style={{background:'#fff',borderRadius:16,padding:32,width:'100%',maxWidth:380,boxShadow:'0 4px 24px rgba(0,0,0,0.08)'}}>
+        <div style={{textAlign:'center',marginBottom:28}}>
+          <div style={{fontSize:36,marginBottom:8}}>🎯</div>
+          <div style={{fontSize:24,fontWeight:700,color:'#0f172a',letterSpacing:'-0.5px'}}>GoalFlow</div>
+          <div style={{fontSize:13,color:'#64748b',marginTop:4}}>Your personal goal cascade</div>
+        </div>
+        <div style={{display:'flex',background:'#f1f5f9',borderRadius:8,padding:3,marginBottom:20}}>
+          {['login','signup'].map(m=>(
+            <button key={m} onClick={()=>{setMode(m);setError('');}} style={{flex:1,padding:'8px',border:'none',borderRadius:6,background:mode===m?'#fff':'transparent',color:mode===m?'#1e293b':'#64748b',fontSize:13,fontWeight:mode===m?600:400,cursor:'pointer',boxShadow:mode===m?'0 1px 3px rgba(0,0,0,0.1)':'none'}}>
+              {m==='login'?'Log in':'Sign up'}
+            </button>
+          ))}
+        </div>
+        <input value={email} onChange={e=>setEmail(e.target.value)} placeholder="Email address" type="email" style={inp}/>
+        <input value={password} onChange={e=>setPassword(e.target.value)} placeholder="Password (min 6 characters)" type="password" style={{...inp,marginBottom:error?8:16}} onKeyDown={e=>e.key==='Enter'&&handle()}/>
+        {error&&<div style={{fontSize:12,color:error.includes('created')?'#16a34a':'#ef4444',marginBottom:12,lineHeight:1.5}}>{error}</div>}
+        <button onClick={handle} disabled={loading} style={{width:'100%',background:'#6366f1',color:'#fff',border:'none',borderRadius:8,padding:'11px',fontSize:14,fontWeight:600,cursor:loading?'not-allowed':'pointer',opacity:loading?0.7:1}}>
+          {loading?'Please wait…':mode==='login'?'Log in':'Create account'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ── Main App
 export default function App(){
-  const [db,setDb]=useState(()=>{try{return JSON.parse(localStorage.getItem(SK))||EMPTY();}catch{return EMPTY();}});
+  const [user,setUser]=useState(null);
+  const [authLoading,setAuthLoading]=useState(true);
+  const [db,setDb]=useState(EMPTY());
+  const [loading,setLoading]=useState(false);
   const [active,setActive]=useState('longTerm');
   const [expanded,setExpanded]=useState({});
   const [modal,setModal]=useState(null);
@@ -34,13 +85,92 @@ export default function App(){
   const [w,setW]=useState(window.innerWidth);
 
   useEffect(()=>{const h=()=>setW(window.innerWidth);window.addEventListener('resize',h);return()=>window.removeEventListener('resize',h);},[]);
-  useEffect(()=>{localStorage.setItem(SK,JSON.stringify(db));},[db]);
-  const mob=w<640;
 
-  const addI=(lvl,item)=>setDb(d=>({...d,[lvl]:[...d[lvl],{...item,id:uid(),done:false,at:Date.now()}]}));
-  const updI=(lvl,id,p)=>setDb(d=>({...d,[lvl]:d[lvl].map(i=>i.id===id?{...i,...p}:i)}));
-  const delI=(lvl,id)=>setDb(d=>({...d,[lvl]:d[lvl].filter(i=>i.id!==id)}));
-  const tog=(lvl,id)=>setDb(d=>({...d,[lvl]:d[lvl].map(i=>i.id===id?{...i,done:!i.done}:i)}));
+  // ── Auth listener
+  useEffect(()=>{
+    supabase.auth.getSession().then(({data:{session}})=>{
+      setUser(session?.user||null);
+      setAuthLoading(false);
+    });
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((_,session)=>{
+      setUser(session?.user||null);
+    });
+    return()=>subscription.unsubscribe();
+  },[]);
+
+  // ── Load data when user logs in
+  useEffect(()=>{
+    if(!user)return;
+    loadAll();
+  },[user]);
+
+  const loadAll=async()=>{
+    setLoading(true);
+    const {data,error}=await supabase.from('items').select('*').eq('user_id',user.id);
+    if(error){console.error(error);setLoading(false);return;}
+    const grouped=EMPTY();
+    (data||[]).forEach(row=>{
+      const lvl=row.level;
+      if(!grouped[lvl])return;
+      grouped[lvl].push({
+        id:row.id, title:row.title, notes:row.notes||'',
+        done:row.done, parentId:row.parent_id||'',
+        period:row.period||'', weekStart:row.week_start||'',
+        date:row.date||'', tStart:row.t_start||'', tEnd:row.t_end||'',
+        at:new Date(row.created_at).getTime()
+      });
+    });
+    Object.keys(grouped).forEach(k=>grouped[k].sort((a,b)=>a.at-b.at));
+    setDb(grouped);
+    setLoading(false);
+  };
+
+  const toRow=(lvl,item)=>({
+    user_id:user.id, level:lvl,
+    title:item.title, notes:item.notes||null,
+    done:item.done||false, parent_id:item.parentId||null,
+    period:item.period||null, week_start:item.weekStart||null,
+    date:item.date||null, t_start:item.tStart||null, t_end:item.tEnd||null,
+  });
+
+  const addI=async(lvl,item)=>{
+    const row=toRow(lvl,{...item,done:false});
+    const {data,error}=await supabase.from('items').insert(row).select().single();
+    if(error){console.error(error);return;}
+    const newItem={...item,id:data.id,done:false,at:new Date(data.created_at).getTime()};
+    setDb(d=>({...d,[lvl]:[...d[lvl],newItem]}));
+  };
+
+  const updI=async(lvl,id,patch)=>{
+    const dbPatch={};
+    if(patch.title!==undefined)dbPatch.title=patch.title;
+    if(patch.notes!==undefined)dbPatch.notes=patch.notes;
+    if(patch.done!==undefined)dbPatch.done=patch.done;
+    if(patch.parentId!==undefined)dbPatch.parent_id=patch.parentId||null;
+    if(patch.period!==undefined)dbPatch.period=patch.period||null;
+    if(patch.weekStart!==undefined)dbPatch.week_start=patch.weekStart||null;
+    if(patch.date!==undefined)dbPatch.date=patch.date||null;
+    if(patch.tStart!==undefined)dbPatch.t_start=patch.tStart||null;
+    if(patch.tEnd!==undefined)dbPatch.t_end=patch.tEnd||null;
+    await supabase.from('items').update(dbPatch).eq('id',id);
+    setDb(d=>({...d,[lvl]:d[lvl].map(i=>i.id===id?{...i,...patch}:i)}));
+  };
+
+  const delI=async(lvl,id)=>{
+    await supabase.from('items').delete().eq('id',id);
+    setDb(d=>({...d,[lvl]:d[lvl].filter(i=>i.id!==id)}));
+  };
+
+  const tog=(lvl,id)=>{
+    const item=db[lvl].find(i=>i.id===id);
+    if(item)updI(lvl,id,{done:!item.done});
+  };
+
+  const signOut=async()=>{
+    await supabase.auth.signOut();
+    setDb(EMPTY());
+    setUser(null);
+  };
 
   const mkForm=(lvl,pid='')=>{
     const b={title:'',notes:'',parentId:pid};
@@ -51,8 +181,14 @@ export default function App(){
   };
   const openAdd=(lvl,pid='')=>{setForm(mkForm(lvl,pid));setModal({mode:'add',lvl});};
   const openEdit=(lvl,item)=>{setForm({...item});setModal({mode:'edit',lvl,id:item.id});};
-  const saveMdl=()=>{if(!form.title?.trim())return;if(modal.mode==='add')addI(modal.lvl,form);else updI(modal.lvl,modal.id,form);setModal(null);};
+  const saveMdl=()=>{
+    if(!form.title?.trim())return;
+    if(modal.mode==='add')addI(modal.lvl,form);
+    else updI(modal.lvl,modal.id,form);
+    setModal(null);
+  };
 
+  const mob=w<640;
   const aL=L(active);
   const items=db[active]||[];
   const childId=CHILD_OF[active];
@@ -134,27 +270,27 @@ export default function App(){
   const inp={width:'100%',border:'1px solid #d1d5db',borderRadius:8,padding:'8px 11px',fontSize:14,outline:'none',boxSizing:'border-box',color:'#1e293b',background:'#fff',fontFamily:'inherit',marginBottom:0};
   const lbl=txt=><label style={{fontSize:13,fontWeight:600,color:'#374151',marginBottom:5,display:'block',marginTop:12}}>{txt}</label>;
 
-  const steps=[
-    ['Register a free Azure app','Go to portal.azure.com → App registrations → New registration. Name it "GoalFlow". Set redirect URI type to Single-page application and enter your Vercel URL.'],
-    ['Grant calendar permission','In your app → API permissions → Add → Microsoft Graph → Delegated → Calendars.ReadWrite. Grant consent when prompted.'],
-    ['Copy your client ID','From the app Overview, copy the Application (client) ID — a GUID like xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx.'],
-    ['Deploy to Vercel','Push code to GitHub and import at vercel.com. Add environment variable: VITE_MS_CLIENT_ID = your client ID.'],
-    ['Sign in and sync','Open your deployed app and click Connect Outlook. After one-time consent, the 📧 icon on daily tasks creates a Busy event in Outlook.'],
-  ];
-
   const sidebar=(
     <div style={{width:240,background:'#16213e',display:'flex',flexDirection:'column',height:'100%',overflowY:'auto',flexShrink:0}}>
       <div style={{padding:'18px 18px 14px',borderBottom:'1px solid rgba(255,255,255,0.07)'}}>
         <div style={{fontSize:18,fontWeight:700,color:'#fff',letterSpacing:'-0.3px'}}>🎯 GoalFlow</div>
-        <div style={{fontSize:11,color:'rgba(255,255,255,0.3)',marginTop:2}}>Your personal goal cascade</div>
+        <div style={{fontSize:11,color:'rgba(255,255,255,0.3)',marginTop:2}}>{user?.email}</div>
       </div>
       <div style={{flex:1,overflowY:'auto',padding:'6px 0'}}><NavItems/></div>
       <div style={{padding:'10px 18px',borderTop:'1px solid rgba(255,255,255,0.07)',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
-        <span style={{fontSize:11,color:'rgba(255,255,255,0.22)'}}>Auto-saved locally</span>
-        <button onClick={()=>setOutlook(true)} style={{background:'none',border:'none',cursor:'pointer',color:'#0ea5e9',fontSize:11,display:'flex',alignItems:'center',gap:3,padding:0}}>📧 Outlook</button>
+        <button onClick={()=>setOutlook(true)} style={{background:'none',border:'none',cursor:'pointer',color:'#0ea5e9',fontSize:11,padding:0}}>📧 Outlook</button>
+        <button onClick={signOut} style={{background:'none',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.3)',fontSize:11,padding:0}}>Sign out</button>
       </div>
     </div>
   );
+
+  if(authLoading)return(
+    <div style={{minHeight:'100vh',display:'flex',alignItems:'center',justifyContent:'center',background:'#f8fafc'}}>
+      <div style={{fontSize:14,color:'#64748b'}}>Loading…</div>
+    </div>
+  );
+
+  if(!user)return <AuthScreen onAuth={u=>setUser(u)}/>;
 
   return(
     <div style={{position:'relative',height:'100vh',display:'flex',fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',background:'#f8fafc',overflow:'hidden'}}>
@@ -170,25 +306,26 @@ export default function App(){
               <button onClick={()=>setNavOpen(false)} style={{background:'none',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.5)',fontSize:18}}>✕</button>
             </div>
             <div style={{flex:1,overflowY:'auto',padding:'6px 0'}}><NavItems/></div>
+            <div style={{padding:'10px 18px',borderTop:'1px solid rgba(255,255,255,0.07)'}}>
+              <button onClick={signOut} style={{background:'none',border:'none',cursor:'pointer',color:'rgba(255,255,255,0.3)',fontSize:12,padding:0}}>Sign out</button>
+            </div>
           </div>
         </div>
       )}
 
       <div style={{flex:1,display:'flex',flexDirection:'column',height:'100%',overflow:'hidden',minWidth:0}}>
         <div style={{padding:'13px 20px',background:'#fff',borderBottom:'1px solid #e2e8f0',display:'flex',alignItems:'center',gap:12,flexShrink:0}}>
-          {mob&&(
-            <button onClick={()=>setNavOpen(true)} style={{background:'none',border:'none',cursor:'pointer',padding:4,color:'#64748b',fontSize:20}}>☰</button>
-          )}
+          {mob&&<button onClick={()=>setNavOpen(true)} style={{background:'none',border:'none',cursor:'pointer',padding:4,color:'#64748b',fontSize:20}}>☰</button>}
           <div style={{flex:1}}>
             <div style={{fontSize:mob?16:20,fontWeight:700,color:'#0f172a'}}>{aL.label}</div>
             <div style={{fontSize:11,color:aL.clr,fontWeight:600,marginTop:1}}>{aL.sub}</div>
           </div>
-          <button onClick={()=>openAdd(active)} style={{background:aL.clr,color:'#fff',border:'none',borderRadius:8,padding:mob?'7px 14px':'8px 18px',fontSize:13,fontWeight:600,cursor:'pointer'}}>
-            + Add
-          </button>
+          <button onClick={()=>openAdd(active)} style={{background:aL.clr,color:'#fff',border:'none',borderRadius:8,padding:mob?'7px 14px':'8px 18px',fontSize:13,fontWeight:600,cursor:'pointer'}}>+ Add</button>
         </div>
 
-        {items.length>0&&(()=>{const d=items.filter(i=>i.done).length,pct=Math.round(d/items.length*100);return(
+        {loading&&<div style={{padding:'12px 20px',fontSize:13,color:'#64748b',background:'#fff',borderBottom:'1px solid #f1f5f9'}}>Loading your data…</div>}
+
+        {!loading&&items.length>0&&(()=>{const d=items.filter(i=>i.done).length,pct=Math.round(d/items.length*100);return(
           <div style={{padding:'7px 20px',background:'#fff',borderBottom:'1px solid #f1f5f9',flexShrink:0}}>
             <div style={{display:'flex',justifyContent:'space-between',fontSize:11,color:'#94a3b8',marginBottom:4}}>
               <span>{d} of {items.length} done</span><span>{pct}%</span>
@@ -200,7 +337,7 @@ export default function App(){
         );})()}
 
         <div style={{flex:1,overflowY:'auto',padding:'14px 20px'}}>
-          {items.length===0?(
+          {!loading&&items.length===0&&(
             <div style={{textAlign:'center',padding:'60px 20px'}}>
               <div style={{fontSize:48,marginBottom:12}}>📋</div>
               <div style={{fontSize:17,fontWeight:600,color:'#64748b',marginBottom:6}}>Nothing here yet</div>
@@ -209,7 +346,8 @@ export default function App(){
                 + Add {aL.label.replace(/s$/,'')}
               </button>
             </div>
-          ):items.map(item=><Card key={item.id} item={item} lvl={active}/>)}
+          )}
+          {!loading&&items.map(item=><Card key={item.id} item={item} lvl={active}/>)}
         </div>
 
         {mob&&(
@@ -293,18 +431,8 @@ export default function App(){
               <div style={{background:'#eff6ff',border:'1px solid #bfdbfe',borderRadius:10,padding:12,marginBottom:18,fontSize:13,color:'#1e40af',lineHeight:1.7}}>
                 Creates events in your personal Outlook / Hotmail marked as <strong>Busy</strong> — so Outlook's scheduling assistant blocks those slots for people trying to book you.
               </div>
-              <div style={{fontSize:13,fontWeight:700,color:'#1e293b',marginBottom:14}}>One-time setup (~15 min, $0 cost)</div>
-              {steps.map(([t,b],i)=>(
-                <div key={i} style={{display:'flex',gap:12,marginBottom:14}}>
-                  <div style={{width:24,height:24,borderRadius:'50%',background:'#6366f1',color:'#fff',fontSize:12,fontWeight:700,display:'flex',alignItems:'center',justifyContent:'center',flexShrink:0}}>{i+1}</div>
-                  <div>
-                    <div style={{fontSize:13,fontWeight:600,color:'#1e293b',marginBottom:2}}>{t}</div>
-                    <div style={{fontSize:13,color:'#64748b',lineHeight:1.6}}>{b}</div>
-                  </div>
-                </div>
-              ))}
-              <div style={{background:'#f0fdf4',border:'1px solid #bbf7d0',borderRadius:10,padding:'10px 12px',fontSize:13,color:'#166534',lineHeight:1.6}}>
-                📱 <strong>Mobile:</strong> Open your Vercel URL on your phone → tap Share → Add to Home Screen. Works offline like a native app.
+              <div style={{fontSize:13,color:'#64748b',lineHeight:1.7}}>
+                Full setup guide coming in the next update. For now, note down your task times and block them manually in Outlook — the automated sync will be added shortly.
               </div>
             </div>
           </div>
